@@ -1,0 +1,156 @@
+name: Zampto-Renew
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '30 23 * * *'   # 每 3 小时一次（UTC 00/03/06/09/12/15/18/21 = 北京 08/11/14/17/20/23/02/05）
+
+jobs:
+  run_zampto_renew:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: 📂 检出仓库（脚本已在根目录）
+        uses: actions/checkout@v4
+
+      - name: 🐍 设置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: 🛠️ 安装系统依赖（Ubuntu runner 已自带 Chrome）
+        timeout-minutes: 10
+        run: |
+          if command -v Xvfb >/dev/null 2>&1 && command -v xvfb-run >/dev/null 2>&1; then
+            echo "✅ Xvfb / xvfb-run 已预装，跳过 apt 安装"
+            exit 0
+          fi
+          install_deps() {
+            sudo apt-get update -qq && \
+            sudo apt-get install -y --no-install-recommends -o Acquire::Retries=2 \
+              xvfb xdotool
+          }
+          set_apt() {
+            MIRROR_="$1"
+            sudo bash -c 'M='"$MIRROR_"'; source /etc/os-release && printf "deb http://%s/ubuntu/ %s main restricted universe multiverse\ndeb http://%s/ubuntu/ %s-updates main restricted universe multiverse\ndeb http://%s/ubuntu/ %s-security main restricted universe multiverse\n" "$M" "$VERSION_CODENAME" "$M" "$VERSION_CODENAME" "$M" "$VERSION_CODENAME" > /etc/apt/sources.list'
+          }
+          for MIRROR in azure.archive.ubuntu.com mirrors.aliyun.com mirrors.tuna.tsinghua.edu.cn archive.ubuntu.com; do
+            echo "--- 尝试 apt 源: $MIRROR ---"
+            set_apt "$MIRROR"
+            if timeout 75 bash -c "$(declare -f install_deps); install_deps"; then
+              echo "✅ 使用 $MIRROR 安装成功"
+              exit 0
+            fi
+            echo "⚠️ $MIRROR 失败，换下一个源"
+          done
+          echo "❌ 所有 apt 源均不可用，无法安装 Xvfb"
+          command -v Xvfb || echo "Xvfb 缺失：脚本需要 xvfb-run 才能运行"
+          exit 1
+
+      - name: ✅ 验证系统 Chrome
+        run: |
+          google-chrome --version
+          which google-chrome
+
+      - name: 💾 缓存 pip 包
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-seleniumbase-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: pip-${{ runner.os }}-seleniumbase-
+
+      - name: 🐍 安装 Python 依赖
+        run: |
+          pip install --cache-dir ~/.cache/pip seleniumbase requests[socks] python-xlib pyyaml || \
+          pip install --cache-dir ~/.cache/pip -i https://pypi.tuna.tsinghua.edu.cn/simple seleniumbase requests[socks] python-xlib pyyaml
+          seleniumbase install chromedriver || true
+
+      - name: 🛡️ 启动 mihomo 代理
+        run: |
+          set -e
+          echo "📝 生成 Mihomo 配置文件..."
+          cat << 'EOF' > mihomo_config.yaml
+          mixed-port: 1080
+          external-controller: 127.0.0.1:9090
+          allow-lan: false
+          mode: global
+          log-level: info
+          proxies:
+            - name: "TW"
+              type: vless
+              server: 154.21.203.45
+              port: 8443
+              uuid: 7997d69b-24c3-469b-8180-46e64b4e6d83
+              udp: true
+              tls: true
+              skip-cert-verify: false
+              servername: edt.fuckslut.dpdns.org
+              client-fingerprint: chrome
+              network: ws
+              ws-opts:
+                path: "/proxyip=https://111.250.112.252:443"
+                headers:
+                  Host: edt.fuckslut.dpdns.org
+          proxy-groups:
+            - name: GLOBAL
+              type: select
+              proxies:
+                - "TW"
+          rules:
+            - MATCH,GLOBAL
+          EOF
+
+          echo "📦 下载 mihomo..."
+          MIHOMO_VER="v1.18.10"
+          MIHOMO_URL="https://github.com/MetaCubeX/mihomo/releases/download/${MIHOMO_VER}/mihomo-linux-amd64-${MIHOMO_VER}.gz"
+          if ! wget -q -T 30 "$MIHOMO_URL" -O mihomo.gz; then
+            echo "⚠️ GitHub 下载失败，尝试镜像..."
+            wget -q -T 30 "https://ghproxy.net/${MIHOMO_URL}" -O mihomo.gz
+          fi
+          gzip -dc mihomo.gz > mihomo 2>/dev/null || gunzip -f mihomo.gz
+          chmod +x mihomo
+          echo "📦 mihomo 版本: $(./mihomo -v | head -1)"
+
+          echo "🚀 启动 mihomo..."
+          nohup ./mihomo -f mihomo_config.yaml > mihomo.log 2>&1 &
+          sleep 5
+          echo "📝 mihomo 启动日志:"
+          tail -n 20 mihomo.log || true
+
+          echo "🔍 测试代理连通性..."
+          IP=$(curl -s -m 15 -x socks5://127.0.0.1:1080 https://api.ipify.org)
+          if [ -n "$IP" ]; then
+            echo "✅ 代理已生效，当前出口 IP: $IP"
+          else
+            echo "❌ 代理测试失败，节点可能已失效！"
+            cat mihomo.log
+            exit 1
+          fi
+
+      - name: 🚀 运行续期脚本
+        env:
+          PYTHONIOENCODING: utf-8
+          ZAMPTO_ACCOUNT: ${{ secrets.ZAMPTO_ACCOUNT }}
+          ZAMPTO_PASSWORD: ${{ secrets.ZAMPTO_PASSWORD }}
+          TARGET_SERVERS: ${{ secrets.TARGET_SERVERS }}
+          LOGIN_URL: ${{ secrets.LOGIN_URL }}
+          ZAMPTO_APP_ID: ${{ secrets.ZAMPTO_APP_ID }}
+          ZAMPTO_DOMAIN: ${{ secrets.ZAMPTO_DOMAIN }}
+          # 明确指定本地代理给 Python 脚本使用
+          GOST_PROXY: "socks5://127.0.0.1:1080"
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        run: |
+          xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python zampto_renew.py
+
+      - name: 📸 上传调试截图和代理日志
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-${{ github.run_id }}
+          path: |
+            *.png
+            mihomo.log
+            mihomo_config.yaml
+          retention-days: 3
