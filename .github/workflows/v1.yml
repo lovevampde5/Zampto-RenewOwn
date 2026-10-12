@@ -1,4 +1,4 @@
-name: Zampto-Renew v1
+name: Zampto-Renew
 
 on:
   workflow_dispatch:
@@ -22,8 +22,6 @@ jobs:
       - name: 🛠️ 安装系统依赖（Ubuntu runner 已自带 Chrome）
         timeout-minutes: 10
         run: |
-          # runner 已预装 google-chrome-stable + Xvfb，尽量不依赖 apt；
-          # 缺 Xvfb 时才尝试多源 apt（azure→阿里→清华→官方），每源 75s 超时，装不上明确报错
           if command -v Xvfb >/dev/null 2>&1 && command -v xvfb-run >/dev/null 2>&1; then
             echo "✅ Xvfb / xvfb-run 已预装，跳过 apt 安装"
             exit 0
@@ -79,18 +77,26 @@ jobs:
           mode: global
           log-level: info
           proxies:
-            - name: "RO"
-              type: hysteria2
-              server: 78.154.103.10
-              port: 16192
-              password: "b5c445d1-8e59-465f-af0c-1f4193d15693"
-              sni: www.bing.com
-              skip-cert-verify: true
+            - name: "TW"
+              type: vless
+              server: 154.21.203.45
+              port: 8443
+              uuid: 7997d69b-24c3-469b-8180-46e64b4e6d83
+              udp: true
+              tls: true
+              skip-cert-verify: false
+              servername: edt.fuckslut.dpdns.org
+              client-fingerprint: chrome
+              network: ws
+              ws-opts:
+                path: "/proxyip=https://111.250.112.252:443"
+                headers:
+                  Host: edt.fuckslut.dpdns.org
           proxy-groups:
             - name: GLOBAL
               type: select
               proxies:
-                - "RO"
+                - "TW"
           rules:
             - MATCH,GLOBAL
           EOF
@@ -131,7 +137,7 @@ jobs:
           LOGIN_URL: ${{ secrets.LOGIN_URL }}
           ZAMPTO_APP_ID: ${{ secrets.ZAMPTO_APP_ID }}
           ZAMPTO_DOMAIN: ${{ secrets.ZAMPTO_DOMAIN }}
-          # 直接将代理地址硬编码给脚本，确保脚本调用本地 1080 端口
+          # 明确指定本地代理给 Python 脚本使用
           GOST_PROXY: "socks5://127.0.0.1:1080"
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
