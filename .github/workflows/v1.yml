@@ -1,4 +1,4 @@
-name: Zampto-Renew
+name: Zampto-Renew v1
 
 on:
   workflow_dispatch:
